@@ -1,11 +1,10 @@
 use paste::paste;
 use thiserror::Error;
 
-use crate::unit_prefix::UnitPrefix;
-
 use super::{
     num::{from_slice_radix, ParseIntError},
-    token::{token, Token, Unit},
+    token::{token, FullUnit, Token, Unit},
+    unit_prefix::UnitPrefix,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -73,13 +72,25 @@ pub(crate) fn tokenize(s: &str) -> Result<Vec<Token>, TokenizerError> {
         };
     }
 
+    macro_rules! unit {
+        ($prefix:expr, $unit:expr, $len:expr) => {
+            token!(Unit(FullUnit($prefix, $unit)), current..(current + $len))
+        };
+        ($unit:expr, $len:expr) => {
+            token!(
+                Unit(FullUnit(UnitPrefix::None, $unit)),
+                current..(current + $len)
+            )
+        };
+    }
+
     macro_rules! parse_as {
         ($rad:ident, $input:ident, $offset:expr) => {{
             paste! {
                 let (val, rest) =
                     [<parse_ $rad _nr>]($input).map_err(|e| TokenizerError::InvalidDigit(current + $offset, e))?;
                 let len = input.len() - rest.len();
-                (tok!(Number(val), len), rest)
+                (tok!(Integer(val), len), rest)
             }
         }};
         ($rad:ident, $input:ident) => {
@@ -90,8 +101,8 @@ pub(crate) fn tokenize(s: &str) -> Result<Vec<Token>, TokenizerError> {
     macro_rules! parse_unit {
         ($input:ident, $prefix:expr, $len:literal) => {{
             match $input {
-                [b'b', rest @ ..] => (tok!(Unit(Some($prefix), Unit::Bit), $len + 1), rest),
-                [b'B', rest @ ..] => (tok!(Unit(Some($prefix), Unit::Byte), $len + 1), rest),
+                [b'b', rest @ ..] => (unit!($prefix, Unit::Bit, $len + 1), rest),
+                [b'B', rest @ ..] => (unit!($prefix, Unit::Byte, $len + 1), rest),
                 _ => return Err(TokenizerError::UnexpectedCharacter(current)),
             }
         }};
@@ -110,8 +121,8 @@ pub(crate) fn tokenize(s: &str) -> Result<Vec<Token>, TokenizerError> {
             [b'/', rest @ ..] => (tok!(Slash, 1), rest),
             [b'(', rest @ ..] => (tok!(LeftParen, 1), rest),
             [b')', rest @ ..] => (tok!(RightParen, 1), rest),
-            [b'b', rest @ ..] => (tok!(Unit(None, Unit::Bit), 1), rest),
-            [b'B', rest @ ..] => (tok!(Unit(None, Unit::Byte), 1), rest),
+            [b'b', rest @ ..] => (unit!(Unit::Bit, 1), rest),
+            [b'B', rest @ ..] => (unit!(Unit::Byte, 1), rest),
             // Keywords
             [b'a', b's', rest @ ..] => (tok!(As, 2), rest),
             // Literals
@@ -191,9 +202,9 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                token!(Number(42), 0..2),
+                token!(Integer(42), 0..2),
                 token!(Plus, 3..4),
-                token!(Number(42), 5..7),
+                token!(Integer(42), 5..7),
                 token!(Eof, 7..7),
             ]
         );
@@ -206,8 +217,8 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                token!(Number(42), 0..2),
-                token!(Unit(Some(UnitPrefix::Kibi), Unit::Bit), 2..5),
+                token!(Integer(42), 0..2),
+                token!(Unit(FullUnit(UnitPrefix::Kibi, Unit::Bit)), 2..5),
                 token!(Eof, 5..5),
             ]
         );
@@ -220,8 +231,8 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                token!(Number(42), 0..2),
-                token!(Unit(None, Unit::Byte), 2..3),
+                token!(Integer(42), 0..2),
+                token!(Unit(FullUnit(UnitPrefix::None, Unit::Byte)), 2..3),
                 token!(Eof, 3..3),
             ]
         );
@@ -234,8 +245,8 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                token!(Number(42), 0..2),
-                token!(Unit(Some(UnitPrefix::Kibi), Unit::Byte), 2..5),
+                token!(Integer(42), 0..2),
+                token!(Unit(FullUnit(UnitPrefix::Kibi, Unit::Byte)), 2..5),
                 token!(Eof, 5..5),
             ]
         );
@@ -248,8 +259,8 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                token!(Number(42), 0..2),
-                token!(Unit(Some(UnitPrefix::Kilo), Unit::Byte), 2..4),
+                token!(Integer(42), 0..2),
+                token!(Unit(FullUnit(UnitPrefix::Kilo, Unit::Byte)), 2..4),
                 token!(Eof, 4..4),
             ]
         );
@@ -262,25 +273,25 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                token!(Number(12), 0..2),
-                token!(Unit(Some(UnitPrefix::Kibi), Unit::Byte), 2..5),
+                token!(Integer(12), 0..2),
+                token!(Unit(FullUnit(UnitPrefix::Kibi, Unit::Byte)), 2..5),
                 token!(Slash, 6..7),
-                token!(Number(2), 8..10),
-                token!(Unit(Some(UnitPrefix::Mebi), Unit::Byte), 10..13),
+                token!(Integer(2), 8..10),
+                token!(Unit(FullUnit(UnitPrefix::Mebi, Unit::Byte)), 10..13),
                 token!(Star, 14..15),
-                token!(Number(42), 16..18),
-                token!(Unit(Some(UnitPrefix::Gibi), Unit::Bit), 18..21),
+                token!(Integer(42), 16..18),
+                token!(Unit(FullUnit(UnitPrefix::Gibi, Unit::Bit)), 18..21),
                 token!(Minus, 22..23),
                 token!(LeftParen, 23..24),
-                token!(Number(42), 24..26),
-                token!(Unit(Some(UnitPrefix::Tebi), Unit::Byte), 26..29),
+                token!(Integer(42), 24..26),
+                token!(Unit(FullUnit(UnitPrefix::Tebi, Unit::Byte)), 26..29),
                 token!(Plus, 30..31),
-                token!(Number(42), 32..34),
-                token!(Unit(Some(UnitPrefix::Pebi), Unit::Byte), 34..37),
+                token!(Integer(42), 32..34),
+                token!(Unit(FullUnit(UnitPrefix::Pebi, Unit::Byte)), 34..37),
                 token!(RightParen, 37..38),
                 token!(Plus, 38..39),
-                token!(Number(42), 40..42),
-                token!(Unit(Some(UnitPrefix::Exbi), Unit::Byte), 42..45),
+                token!(Integer(42), 40..42),
+                token!(Unit(FullUnit(UnitPrefix::Exbi, Unit::Byte)), 42..45),
                 token!(Eof, 45..45),
             ]
         );
@@ -289,7 +300,7 @@ mod tests {
     #[test]
     fn test_tokenize_single_digit() {
         let tokens = tokenize("0").unwrap();
-        assert_eq!(tokens, vec![token!(Number(0), 0..1), token!(Eof, 1..1),]);
+        assert_eq!(tokens, vec![token!(Integer(0), 0..1), token!(Eof, 1..1),]);
     }
 
     #[test]

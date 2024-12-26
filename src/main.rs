@@ -3,10 +3,12 @@ use colored::Colorize;
 
 mod format;
 mod interpreter;
-mod unit_prefix;
 
 use format::as_bin;
-use interpreter::expr::Expr;
+use interpreter::{
+    expr::{Expr, OperatorExprKind},
+    Interpreter,
+};
 
 fn print_stats(num: u64) {
     let dec = "Decimal".green();
@@ -33,29 +35,39 @@ fn print_stats(num: u64) {
 
 fn pretty_print(expr: &Expr) {
     match expr {
-        Expr::Binary {
-            left,
-            operator,
-            right,
-        } => {
-            print!("({} ", operator);
-            pretty_print(left);
-            print!(" ");
-            pretty_print(right);
-            print!(")");
-        }
-        Expr::Unary { operator, right } => {
-            print!("({} ", operator);
-            pretty_print(right);
-            print!(")");
-        }
+        Expr::Operator(expr) => match expr {
+            OperatorExprKind::ArithmeticOrLogical {
+                left,
+                operator,
+                right,
+            } => {
+                print!("({} ", operator);
+                pretty_print(left);
+                print!(" ");
+                pretty_print(right);
+                print!(")");
+            }
+            OperatorExprKind::TypeCast { left, unit } => {
+                print!("(as ");
+                pretty_print(left);
+                print!(" {})", unit);
+            }
+            OperatorExprKind::Unary { operator, right } => {
+                print!("({} ", operator);
+                pretty_print(right);
+                print!(")");
+            }
+        },
         Expr::Grouping { expression } => {
             print!("(group ");
             pretty_print(expression);
             print!(")");
         }
-        Expr::Literal { value } => {
-            print!("{}", value);
+        Expr::Literal { kind, unit } => {
+            print!("{}", kind);
+            if let Some(unit) = unit {
+                print!("{}", unit);
+            }
         }
     }
 }
@@ -63,13 +75,11 @@ fn pretty_print(expr: &Expr) {
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
 
-    let tokens = interpreter::lexer::tokenize(&args[0])?;
-    println!("{:?}", tokens);
-    let mut parser = interpreter::parser::Parser::new(&tokens);
-    let expr = parser.parse()?;
+    let input = &args[0];
 
-    pretty_print(&expr);
-    println!();
+    let interpreter = Interpreter::new();
+    let value = interpreter.interpret(input)?;
+    println!("{} = {}", input, value);
 
     Ok(())
 }

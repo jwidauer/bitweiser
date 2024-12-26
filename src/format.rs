@@ -1,6 +1,6 @@
 use core::f64;
 
-use crate::unit_prefix::UnitPrefix;
+use crate::interpreter::unit_prefix::UnitPrefix;
 
 pub(crate) fn as_bin(num: u64) -> String {
     let bin = format!("{:b}", num);

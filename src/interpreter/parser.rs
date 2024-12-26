@@ -2,7 +2,7 @@ use anyhow::Result;
 use thiserror::Error;
 
 use super::{
-    expr::Expr,
+    expr::{Expr, OperatorExprKind as OEK},
     token::{Token, TokenKind},
 };
 
@@ -12,7 +12,7 @@ use super::{
 // factor       -> unitcast ( ( "/" | "*" ) unitcast )* ;
 // unitcast     -> unary ( "as" UNIT )? ;
 // unary        -> "-" unary | primary ;
-// primary      -> NUMBER ( UNIT )? | "(" expression ")" | EOF ;
+// primary      -> NUMBER ( UNIT )? | "(" expression ")" ;
 //
 // NUMBER   -> BINARY | OCTAL | DECIMAL | HEX ;
 // BINARY   -> "0b" [01]+ ;
@@ -34,148 +34,107 @@ enum ParserError {
 }
 
 pub struct Parser<'a> {
-    tokens: &'a [Token],
     iter: std::iter::Peekable<std::slice::Iter<'a, Token>>,
-    current: usize,
+}
+
+macro_rules! bump_if {
+    ($self:ident, $($kind:ident),+) => {
+        matches!($self.peek(), $(Some(TokenKind::$kind))|+).then(|| $self.bump())
+    };
+    ($self:ident, $($kind:ident(_)),+) => {
+        matches!($self.peek(), $(Some(TokenKind::$kind(_)))|+).then(|| $self.bump())
+    };
 }
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [Token]) -> Self {
         Self {
-            tokens,
             iter: tokens.iter().peekable(),
-            current: 0,
         }
     }
 
     pub fn parse(&mut self) -> Result<Expr> {
-        self.expression()
-    }
+        let expr = self.expression()?;
 
-    fn expression(&mut self) -> Result<Expr> {
-        let expr = self.term()?;
-
-        if self.is_at_end() {
+        if bump_if!(self, Eof).is_some() {
             return Ok(expr);
         }
 
-        // Err(ParserError::ExpectedEof)
-        anyhow::bail!("Expected end of expression.")
+        anyhow::bail!("Expected end of expression, found {}.", self.bump().kind());
+    }
+
+    fn expression(&mut self) -> Result<Expr> {
+        self.term()
     }
 
     fn term(&mut self) -> Result<Expr> {
         let mut expr = self.factor()?;
 
-        while matches!(self.peek(), Some(TokenKind::Minus) | Some(TokenKind::Plus)) {
-            let operator = self.iter.next().unwrap().clone();
-            let right = self.factor()?;
-            expr = Expr::Binary {
+        while let Some(operator) = bump_if!(self, Minus, Plus) {
+            let right = Box::new(self.factor()?);
+            expr = Expr::Operator(OEK::ArithmeticOrLogical {
                 left: Box::new(expr),
                 operator,
-                right: Box::new(right),
-            };
-        }
-        // while self.match_token(&[TokenKind::Minus, TokenKind::Plus]) {
-        //     let operator = self.previous();
-        //     let right = self.factor()?;
-        //     expr = Expr::Binary {
-        //         left: Box::new(expr),
-        //         operator,
-        //         right: Box::new(right),
-        //     };
-        // }
-
-        Ok(expr)
-    }
-
-    fn factor(&mut self) -> Result<Expr, anyhow::Error> {
-        let mut expr = self.unitcast()?;
-
-        while matches!(self.peek(), Some(TokenKind::Slash) | Some(TokenKind::Star)) {
-            let operator = self.iter.next().unwrap().clone();
-            let right = self.unitcast()?;
-            expr = Expr::Binary {
-                left: Box::new(expr),
-                operator,
-                right: Box::new(right),
-            };
-        }
-        // while self.match_token(&[TokenKind::Slash, TokenKind::Star]) {
-        //     let operator = self.previous();
-        //     let right = self.unitcast()?;
-        //     expr = Expr::Binary {
-        //         left: Box::new(expr),
-        //         operator,
-        //         right: Box::new(right),
-        //     };
-        // }
-
-        Ok(expr)
-    }
-
-    fn unitcast(&mut self) -> Result<Expr, anyhow::Error> {
-        let mut expr = self.unary()?;
-
-        if matches!(self.peek(), Some(TokenKind::As)) {
-            let as_op = self.iter.next().unwrap().clone();
-            let unit = self.consume_unit()?;
-
-            expr = Expr::Binary {
-                left: Box::new(expr),
-                operator: as_op,
-                right: Box::new(Expr::Literal { value: unit }),
-            };
-        }
-        // if self.match_token(&[TokenKind::As]) {
-        //     let as_op = self.previous();
-        //     let unit = self.consume_unit()?;
-
-        //     expr = Expr::Binary {
-        //         left: Box::new(expr),
-        //         operator: as_op,
-        //         right: Box::new(Expr::Literal { value: unit }),
-        //     };
-        // }
-
-        Ok(expr)
-    }
-
-    fn unary(&mut self) -> Result<Expr, anyhow::Error> {
-        if matches!(self.peek(), Some(TokenKind::Minus)) {
-            let operator = self.iter.next().unwrap().clone();
-            let right = self.unary()?;
-            return Ok(Expr::Unary {
-                operator,
-                right: Box::new(right),
+                right,
             });
         }
-        // if self.match_token(&[TokenKind::Minus]) {
-        //     let operator = self.previous();
-        //     let right = self.unary()?;
-        //     return Ok(Expr::Unary {
-        //         operator,
-        //         right: Box::new(right),
-        //     });
-        // }
+
+        Ok(expr)
+    }
+
+    fn factor(&mut self) -> Result<Expr> {
+        let mut expr = self.type_cast()?;
+
+        while let Some(operator) = bump_if!(self, Slash, Star) {
+            let right = Box::new(self.type_cast()?);
+            expr = Expr::Operator(OEK::ArithmeticOrLogical {
+                left: Box::new(expr),
+                operator,
+                right,
+            });
+        }
+
+        Ok(expr)
+    }
+
+    fn type_cast(&mut self) -> Result<Expr> {
+        let mut expr = self.unary()?;
+
+        if bump_if!(self, As).is_some() {
+            let unit = self.consume_unit()?;
+
+            expr = Expr::Operator(OEK::TypeCast {
+                left: Box::new(expr),
+                unit,
+            });
+        }
+
+        Ok(expr)
+    }
+
+    fn unary(&mut self) -> Result<Expr> {
+        if let Some(operator) = bump_if!(self, Minus) {
+            let right = Box::new(self.unary()?);
+            return Ok(Expr::Operator(OEK::Unary { operator, right }));
+        }
 
         self.primary()
     }
 
     fn primary(&mut self) -> Result<Expr> {
         match self.peek() {
-            Some(TokenKind::Number(_)) => {
-                let token = self.iter.next().unwrap().clone();
-                return Ok(Expr::Literal { value: token });
+            Some(TokenKind::Integer(_)) => {
+                let kind = self.bump();
+                let unit = bump_if!(self, Unit(_));
+                return Ok(Expr::Literal { kind, unit });
             }
             Some(TokenKind::LeftParen) => {
-                self.iter.next();
-                let expr = self.expression()?;
-                if !matches!(self.next(), Some(TokenKind::RightParen)) {
+                self.bump();
+                let expression = Box::new(self.expression()?);
+                if bump_if!(self, RightParen).is_none() {
                     anyhow::bail!("Expected ')' after expression.")
                 }
-                return Ok(Expr::Grouping {
-                    expression: Box::new(expr),
-                });
+                return Ok(Expr::Grouping { expression });
             }
             _ => {}
         }
@@ -183,72 +142,202 @@ impl<'a> Parser<'a> {
         anyhow::bail!("Expected expression")
     }
 
-    fn next(&mut self) -> Option<TokenKind> {
-        self.iter.next().map(|t| t.kind())
-    }
-
-    // fn primary(&mut self) -> Result<Expr, anyhow::Error> {
-    //     if self.match_token(&[TokenKind::Number(1234)]) {
-    //         return Ok(Expr::Literal {
-    //             value: self.previous(),
-    //         });
-    //     }
-
-    //     if self.match_token(&[TokenKind::LeftParen]) {
-    //         let expr = self.expression()?;
-    //         self.consume(&TokenKind::RightParen, "Expect ')' after expression.")?;
-    //         return Ok(Expr::Grouping {
-    //             expression: Box::new(expr),
-    //         });
-    //     }
-
-    //     Err(self.error(self.peek(), "Expect expression"))
-    // }
-
-    fn consume_unit(&mut self) -> Result<Token, anyhow::Error> {
-        if matches!(self.peek(), Some(TokenKind::Unit(_, _))) {
-            return Ok(self.iter.next().unwrap().clone());
-        }
-
-        anyhow::bail!("Expected unit.")
+    fn bump(&mut self) -> Token {
+        self.iter.next().unwrap().clone()
     }
 
     fn peek(&mut self) -> Option<TokenKind> {
         self.iter.peek().map(|t| t.kind())
     }
 
-    fn match_token(&mut self, kinds: &[TokenKind]) -> bool {
-        for kind in kinds {
-            if self.check(*kind) {
-                self.advance();
-                return true;
+    fn consume_unit(&mut self) -> Result<Token> {
+        bump_if!(self, Unit(_)).ok_or(anyhow::anyhow!("Expected unit."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interpreter::{
+        lexer::tokenize,
+        token::{token, FullUnit, Unit},
+        unit_prefix::UnitPrefix,
+    };
+
+    #[test]
+    fn test_parser_single_token() {
+        let input = "1234";
+        let tokens = tokenize(input).unwrap();
+        let mut parser = Parser::new(&tokens);
+        let expr = parser.parse().unwrap();
+        assert_eq!(
+            expr,
+            Expr::Literal {
+                kind: token!(Integer(1234), 0..4),
+                unit: None
             }
-        }
-
-        false
+        );
     }
 
-    fn check(&mut self, kind: TokenKind) -> bool {
-        if self.is_at_end() {
-            return false;
-        }
-
-        self.peek().map(|k| k == kind).unwrap_or(false)
+    #[test]
+    fn test_parser_binary_expr() {
+        let input = "1234 + 5678";
+        let tokens = tokenize(input).unwrap();
+        let mut parser = Parser::new(&tokens);
+        let expr = parser.parse().unwrap();
+        assert_eq!(
+            expr,
+            Expr::Operator(OEK::ArithmeticOrLogical {
+                left: Box::new(Expr::Literal {
+                    kind: token!(Integer(1234), 0..4),
+                    unit: None
+                }),
+                operator: token!(Plus, 5..6),
+                right: Box::new(Expr::Literal {
+                    kind: token!(Integer(5678), 7..11),
+                    unit: None
+                })
+            })
+        );
     }
 
-    fn advance(&mut self) -> Token {
-        if !self.is_at_end() {
-            self.current += 1;
-        }
-
-        self.previous()
+    #[test]
+    fn test_parser_binary_expr_with_precedence() {
+        let input = "1234 * 5678 + 91011";
+        let tokens = tokenize(input).unwrap();
+        let mut parser = Parser::new(&tokens);
+        let expr = parser.parse().unwrap();
+        assert_eq!(
+            expr,
+            Expr::Operator(OEK::ArithmeticOrLogical {
+                left: Box::new(Expr::Operator(OEK::ArithmeticOrLogical {
+                    left: Box::new(Expr::Literal {
+                        kind: token!(Integer(1234), 0..4),
+                        unit: None
+                    }),
+                    operator: token!(Star, 5..6),
+                    right: Box::new(Expr::Literal {
+                        kind: token!(Integer(5678), 7..11),
+                        unit: None
+                    }),
+                })),
+                operator: token!(Plus, 12..13),
+                right: Box::new(Expr::Literal {
+                    kind: token!(Integer(91011), 14..19),
+                    unit: None
+                })
+            })
+        );
     }
 
-    fn is_at_end(&self) -> bool {
-        self.tokens[self.current].kind() == TokenKind::Eof
+    #[test]
+    fn test_parser_nested_binary_expr() {
+        let input = "1234 + 5678 * 91011 / 121314";
+        let tokens = tokenize(input).unwrap();
+        let mut parser = Parser::new(&tokens);
+        let expr = parser.parse().unwrap();
+        assert_eq!(
+            expr,
+            Expr::Operator(OEK::ArithmeticOrLogical {
+                left: Box::new(Expr::Literal {
+                    kind: token!(Integer(1234), 0..4),
+                    unit: None
+                }),
+                operator: token!(Plus, 5..6),
+                right: Box::new(Expr::Operator(OEK::ArithmeticOrLogical {
+                    left: Box::new(Expr::Operator(OEK::ArithmeticOrLogical {
+                        left: Box::new(Expr::Literal {
+                            kind: token!(Integer(5678), 7..11),
+                            unit: None
+                        }),
+                        operator: token!(Star, 12..13),
+                        right: Box::new(Expr::Literal {
+                            kind: token!(Integer(91011), 14..19),
+                            unit: None
+                        }),
+                    })),
+                    operator: token!(Slash, 20..21),
+                    right: Box::new(Expr::Literal {
+                        kind: token!(Integer(121314), 22..28),
+                        unit: None
+                    })
+                }))
+            })
+        );
     }
 
-    fn previous(&self) -> Token {
-        self.tokens[self.current - 1].clone()
+    #[test]
+    fn test_parser_unary_expr() {
+        let input = "-1234";
+        let tokens = tokenize(input).unwrap();
+        let mut parser = Parser::new(&tokens);
+        let expr = parser.parse().unwrap();
+        assert_eq!(
+            expr,
+            Expr::Operator(OEK::Unary {
+                operator: token!(Minus, 0..1),
+                right: Box::new(Expr::Literal {
+                    kind: token!(Integer(1234), 1..5),
+                    unit: None
+                })
+            })
+        );
+    }
+
+    #[test]
+    fn test_parser_grouped_expr() {
+        let input = "(1234 + 5678)";
+        let tokens = tokenize(input).unwrap();
+        let mut parser = Parser::new(&tokens);
+        let expr = parser.parse().unwrap();
+        assert_eq!(
+            expr,
+            Expr::Grouping {
+                expression: Box::new(Expr::Operator(OEK::ArithmeticOrLogical {
+                    left: Box::new(Expr::Literal {
+                        kind: token!(Integer(1234), 1..5),
+                        unit: None
+                    }),
+                    operator: token!(Plus, 6..7),
+                    right: Box::new(Expr::Literal {
+                        kind: token!(Integer(5678), 8..12),
+                        unit: None
+                    })
+                }))
+            }
+        );
+    }
+
+    #[test]
+    fn test_parser_type_cast_expr() {
+        let input = "1234 as KiB";
+        let tokens = tokenize(input).unwrap();
+        let mut parser = Parser::new(&tokens);
+        let expr = parser.parse().unwrap();
+        assert_eq!(
+            expr,
+            Expr::Operator(OEK::TypeCast {
+                left: Box::new(Expr::Literal {
+                    kind: token!(Integer(1234), 0..4),
+                    unit: None
+                }),
+                unit: token!(Unit(FullUnit(UnitPrefix::Kibi, Unit::Byte)), 8..11),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parser_int_literal_with_unit() {
+        let input = "1234 KiB";
+        let tokens = tokenize(input).unwrap();
+        let mut parser = Parser::new(&tokens);
+        let expr = parser.parse().unwrap();
+        assert_eq!(
+            expr,
+            Expr::Literal {
+                kind: token!(Integer(1234), 0..4),
+                unit: Some(token!(Unit(FullUnit(UnitPrefix::Kibi, Unit::Byte)), 5..8)),
+            }
+        );
     }
 }

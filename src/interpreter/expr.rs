@@ -1,20 +1,26 @@
 use super::token::Token;
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Binary {
+    Operator(OperatorExprKind),
+    Grouping { expression: Box<Expr> },
+    Literal { kind: Token, unit: Option<Token> },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OperatorExprKind {
+    ArithmeticOrLogical {
         left: Box<Expr>,
         operator: Token,
         right: Box<Expr>,
     },
-    Grouping {
-        expression: Box<Expr>,
+    TypeCast {
+        left: Box<Expr>,
+        unit: Token,
     },
     Unary {
         operator: Token,
         right: Box<Expr>,
-    },
-    Literal {
-        value: Token,
     },
 }
 

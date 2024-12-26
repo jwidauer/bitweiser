@@ -14,7 +14,7 @@ const TEBI: u64 = 1024u64.pow(4);
 const PEBI: u64 = 1024u64.pow(5);
 const EXBI: u64 = 1024u64.pow(6);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnitPrefix {
     None,
     Kilo,
@@ -145,18 +145,30 @@ impl From<UnitPrefix> for u64 {
     }
 }
 
+impl PartialOrd for UnitPrefix {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for UnitPrefix {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        u64::from(*self).cmp(&u64::from(*other))
+    }
+}
+
 impl Display for UnitPrefix {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         type UP = UnitPrefix;
         match self {
             UP::None => write!(f, ""),
-            UP::Kilo => write!(f, "K"),
+            UP::Kilo => write!(f, "k"),
             UP::Mega => write!(f, "M"),
             UP::Giga => write!(f, "G"),
             UP::Tera => write!(f, "T"),
             UP::Peta => write!(f, "P"),
             UP::Exa => write!(f, "E"),
-            UP::Kibi => write!(f, "Ki"),
+            UP::Kibi => write!(f, "ki"),
             UP::Mebi => write!(f, "Mi"),
             UP::Gibi => write!(f, "Gi"),
             UP::Tebi => write!(f, "Ti"),
