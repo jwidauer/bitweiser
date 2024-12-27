@@ -2,7 +2,7 @@ use anyhow::Result;
 use thiserror::Error;
 
 use super::{
-    expr::{Expr, OperatorExprKind as OEK},
+    expr::{Expr, OperatorExpr as OE},
     token::{Token, TokenKind},
 };
 
@@ -72,7 +72,7 @@ impl<'a> Parser<'a> {
 
         while let Some(operator) = bump_if!(self, Minus, Plus) {
             let right = Box::new(self.factor()?);
-            expr = Expr::Operator(OEK::ArithmeticOrLogical {
+            expr = Expr::Operator(OE::ArithmeticOrLogical {
                 left: Box::new(expr),
                 operator,
                 right,
@@ -87,7 +87,7 @@ impl<'a> Parser<'a> {
 
         while let Some(operator) = bump_if!(self, Slash, Star) {
             let right = Box::new(self.type_cast()?);
-            expr = Expr::Operator(OEK::ArithmeticOrLogical {
+            expr = Expr::Operator(OE::ArithmeticOrLogical {
                 left: Box::new(expr),
                 operator,
                 right,
@@ -103,7 +103,7 @@ impl<'a> Parser<'a> {
         if bump_if!(self, As).is_some() {
             let unit = self.consume_unit()?;
 
-            expr = Expr::Operator(OEK::TypeCast {
+            expr = Expr::Operator(OE::TypeCast {
                 left: Box::new(expr),
                 unit,
             });
@@ -115,7 +115,7 @@ impl<'a> Parser<'a> {
     fn unary(&mut self) -> Result<Expr> {
         if let Some(operator) = bump_if!(self, Minus) {
             let right = Box::new(self.unary()?);
-            return Ok(Expr::Operator(OEK::Unary { operator, right }));
+            return Ok(Expr::Operator(OE::Unary { operator, right }));
         }
 
         self.primary()
@@ -134,7 +134,7 @@ impl<'a> Parser<'a> {
                 if bump_if!(self, RightParen).is_none() {
                     anyhow::bail!("Expected ')' after expression.")
                 }
-                return Ok(Expr::Grouping { expression });
+                return Ok(Expr::Grouping(expression));
             }
             _ => {}
         }
@@ -187,7 +187,7 @@ mod tests {
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
-            Expr::Operator(OEK::ArithmeticOrLogical {
+            Expr::Operator(OE::ArithmeticOrLogical {
                 left: Box::new(Expr::Literal {
                     kind: token!(Integer(1234), 0..4),
                     unit: None
@@ -209,8 +209,8 @@ mod tests {
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
-            Expr::Operator(OEK::ArithmeticOrLogical {
-                left: Box::new(Expr::Operator(OEK::ArithmeticOrLogical {
+            Expr::Operator(OE::ArithmeticOrLogical {
+                left: Box::new(Expr::Operator(OE::ArithmeticOrLogical {
                     left: Box::new(Expr::Literal {
                         kind: token!(Integer(1234), 0..4),
                         unit: None
@@ -238,14 +238,14 @@ mod tests {
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
-            Expr::Operator(OEK::ArithmeticOrLogical {
+            Expr::Operator(OE::ArithmeticOrLogical {
                 left: Box::new(Expr::Literal {
                     kind: token!(Integer(1234), 0..4),
                     unit: None
                 }),
                 operator: token!(Plus, 5..6),
-                right: Box::new(Expr::Operator(OEK::ArithmeticOrLogical {
-                    left: Box::new(Expr::Operator(OEK::ArithmeticOrLogical {
+                right: Box::new(Expr::Operator(OE::ArithmeticOrLogical {
+                    left: Box::new(Expr::Operator(OE::ArithmeticOrLogical {
                         left: Box::new(Expr::Literal {
                             kind: token!(Integer(5678), 7..11),
                             unit: None
@@ -274,7 +274,7 @@ mod tests {
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
-            Expr::Operator(OEK::Unary {
+            Expr::Operator(OE::Unary {
                 operator: token!(Minus, 0..1),
                 right: Box::new(Expr::Literal {
                     kind: token!(Integer(1234), 1..5),
@@ -292,19 +292,17 @@ mod tests {
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
-            Expr::Grouping {
-                expression: Box::new(Expr::Operator(OEK::ArithmeticOrLogical {
-                    left: Box::new(Expr::Literal {
-                        kind: token!(Integer(1234), 1..5),
-                        unit: None
-                    }),
-                    operator: token!(Plus, 6..7),
-                    right: Box::new(Expr::Literal {
-                        kind: token!(Integer(5678), 8..12),
-                        unit: None
-                    })
-                }))
-            }
+            Expr::Grouping(Box::new(Expr::Operator(OE::ArithmeticOrLogical {
+                left: Box::new(Expr::Literal {
+                    kind: token!(Integer(1234), 1..5),
+                    unit: None
+                }),
+                operator: token!(Plus, 6..7),
+                right: Box::new(Expr::Literal {
+                    kind: token!(Integer(5678), 8..12),
+                    unit: None
+                })
+            })))
         );
     }
 
@@ -316,7 +314,7 @@ mod tests {
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
-            Expr::Operator(OEK::TypeCast {
+            Expr::Operator(OE::TypeCast {
                 left: Box::new(Expr::Literal {
                     kind: token!(Integer(1234), 0..4),
                     unit: None

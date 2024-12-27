@@ -30,12 +30,12 @@ impl Interpreter {
 }
 
 fn evaluate(expr: &Expr) -> Result<Value> {
-    use expr::OperatorExprKind as OEK;
+    use expr::OperatorExpr as OE;
     use token::TokenKind as TK;
 
     match expr {
         Expr::Operator(expr) => match expr {
-            OEK::ArithmeticOrLogical {
+            OE::ArithmeticOrLogical {
                 left,
                 operator,
                 right,
@@ -50,7 +50,7 @@ fn evaluate(expr: &Expr) -> Result<Value> {
                     k => unreachable!("Invalid binary operator: {:?}", k),
                 }
             }
-            OEK::TypeCast { left, unit } => {
+            OE::TypeCast { left, unit } => {
                 let left = evaluate(left)?;
                 let unit = match unit.kind() {
                     TK::Unit(unit) => unit,
@@ -58,7 +58,7 @@ fn evaluate(expr: &Expr) -> Result<Value> {
                 };
                 Ok(left.convert_to(unit))
             }
-            OEK::Unary { operator, right } => {
+            OE::Unary { operator, right } => {
                 let right = evaluate(right)?;
                 match operator.kind() {
                     TK::Minus => Ok(-right),
@@ -67,7 +67,7 @@ fn evaluate(expr: &Expr) -> Result<Value> {
                 }
             }
         },
-        Expr::Grouping { expression } => evaluate(expression),
+        Expr::Grouping(expr) => evaluate(expr),
         Expr::Literal { kind, unit } => match kind.kind() {
             TK::Integer(num) => {
                 let value = num as f64;

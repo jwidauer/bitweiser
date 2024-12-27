@@ -1,14 +1,32 @@
+use std::fmt::Display;
+
 use super::token::Token;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Operator(OperatorExprKind),
-    Grouping { expression: Box<Expr> },
+    Operator(OperatorExpr),
+    Grouping(Box<Expr>),
     Literal { kind: Token, unit: Option<Token> },
 }
 
+impl Display for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expr::Operator(expr) => write!(f, "{}", expr),
+            Expr::Grouping(expr) => write!(f, "(group {})", expr),
+            Expr::Literal { kind, unit } => {
+                write!(f, "{}", kind)?;
+                if let Some(unit) = unit {
+                    write!(f, "{}", unit)?;
+                }
+                write!(f, "")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub enum OperatorExprKind {
+pub enum OperatorExpr {
     ArithmeticOrLogical {
         left: Box<Expr>,
         operator: Token,
@@ -22,6 +40,26 @@ pub enum OperatorExprKind {
         operator: Token,
         right: Box<Expr>,
     },
+}
+
+impl Display for OperatorExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OperatorExpr::ArithmeticOrLogical {
+                left,
+                operator,
+                right,
+            } => {
+                write!(f, "({} {} {})", operator, left, right)
+            }
+            OperatorExpr::TypeCast { left, unit } => {
+                write!(f, "(as {} {})", left, unit)
+            }
+            OperatorExpr::Unary { operator, right } => {
+                write!(f, "({} {})", operator, right)
+            }
+        }
+    }
 }
 
 // Grammar:

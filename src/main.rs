@@ -1,14 +1,14 @@
+use std::io::Write;
+
 use anyhow::Result;
+use clap::Parser;
 use colored::Colorize;
 
 mod format;
 mod interpreter;
 
 use format::as_bin;
-use interpreter::{
-    expr::{Expr, OperatorExprKind},
-    Interpreter,
-};
+use interpreter::Interpreter;
 
 fn print_stats(num: u64) {
     let dec = "Decimal".green();
@@ -33,53 +33,59 @@ fn print_stats(num: u64) {
     println!("{bin_size_str}:\t{bin_size}");
 }
 
-fn pretty_print(expr: &Expr) {
-    match expr {
-        Expr::Operator(expr) => match expr {
-            OperatorExprKind::ArithmeticOrLogical {
-                left,
-                operator,
-                right,
-            } => {
-                print!("({} ", operator);
-                pretty_print(left);
-                print!(" ");
-                pretty_print(right);
-                print!(")");
-            }
-            OperatorExprKind::TypeCast { left, unit } => {
-                print!("(as ");
-                pretty_print(left);
-                print!(" {})", unit);
-            }
-            OperatorExprKind::Unary { operator, right } => {
-                print!("({} ", operator);
-                pretty_print(right);
-                print!(")");
-            }
-        },
-        Expr::Grouping { expression } => {
-            print!("(group ");
-            pretty_print(expression);
-            print!(")");
+fn repl() -> Result<()> {
+    let interpreter = Interpreter::new();
+
+    loop {
+        print!("> ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let input = input.trim();
+
+        if input.is_empty() {
+            continue;
         }
-        Expr::Literal { kind, unit } => {
-            print!("{}", kind);
-            if let Some(unit) = unit {
-                print!("{}", unit);
+
+        match input {
+            ":q" | ":quit" => break,
+            ":h" | ":help" => {
+                println!("Commands:");
+                println!("  :q | :quit - Quit the REPL");
+                println!("  :h | :help - Display this help message");
+                continue;
             }
+            _ => match interpreter.interpret(input) {
+                Ok(value) => println!("{input} = {value}"),
+                Err(e) => eprintln!("Error: {e}"),
+            },
         }
     }
+
+    Ok(())
+}
+
+fn eval_expr(expr: &str) -> Result<()> {
+    let interpreter = Interpreter::new();
+    let value = interpreter.interpret(expr)?;
+    println!("{expr} = {value}");
+
+    Ok(())
+}
+
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Args {
+    expr: Option<String>,
 }
 
 fn main() -> Result<()> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let args = Args::parse();
 
-    let input = &args[0];
-
-    let interpreter = Interpreter::new();
-    let value = interpreter.interpret(input)?;
-    println!("{} = {}", input, value);
+    match args.expr {
+        Some(expr) => eval_expr(&expr)?,
+        None => repl()?,
+    }
 
     Ok(())
 }
