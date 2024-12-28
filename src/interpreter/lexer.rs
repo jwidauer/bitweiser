@@ -8,9 +8,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum TokenizerError {
-    #[error("Unexpected end of input")]
-    UnexpectedEndOfInput,
+pub enum LexerError {
     #[error("Unexpected character at index {0}")]
     UnexpectedCharacter(usize),
     #[error("Invalid digit at index {0}")]
@@ -48,70 +46,92 @@ fn parse_hex_nr(s: &[u8]) -> Result<(u64, &[u8]), ParseIntError> {
     parse_nr::<16>(s, |c| !c.is_ascii_hexdigit())
 }
 
-pub(crate) fn tokenize(s: &str) -> Result<Vec<Token>, TokenizerError> {
-    use UnitPrefix as UP;
+pub struct Lexer<'a> {
+    input: Option<&'a [u8]>,
+    current: usize,
+}
 
-    let mut tokens = vec![];
-    let mut input = s.as_bytes();
-
-    // Remove leading whitespace
-    let old_len = input.len();
-    input = input.trim_ascii_start();
-    let mut current = old_len - input.len();
-
-    if input.is_empty() {
-        return Err(TokenizerError::UnexpectedEndOfInput);
-    }
-
-    macro_rules! tok {
-        ($kind:ident, $len:literal) => {
-            token!($kind, current..(current + $len))
-        };
-        ($kind:ident($($val:expr),+), $len:expr) => {
-            token!($kind($($val),+), current..(current + $len))
-        };
-    }
-
-    macro_rules! unit {
-        ($prefix:expr, $unit:expr, $len:expr) => {
-            token!(Unit(FullUnit($prefix, $unit)), current..(current + $len))
-        };
-        ($unit:expr, $len:expr) => {
-            token!(
-                Unit(FullUnit(UnitPrefix::None, $unit)),
-                current..(current + $len)
-            )
-        };
-    }
-
-    macro_rules! parse_as {
-        ($rad:ident, $input:ident, $offset:expr) => {{
-            paste! {
-                let (val, rest) =
-                    [<parse_ $rad _nr>]($input).map_err(|e| TokenizerError::InvalidDigit(current + $offset, e))?;
-                let len = input.len() - rest.len();
-                (tok!(Integer(val), len), rest)
-            }
-        }};
-        ($rad:ident, $input:ident) => {
-            parse_as!($rad, $input, 0)
-        };
-    }
-
-    macro_rules! parse_unit {
-        ($input:ident, $prefix:expr, $len:literal) => {{
-            match $input {
-                [b'b', rest @ ..] => (unit!($prefix, Unit::Bit, $len + 1), rest),
-                [b'B', rest @ ..] => (unit!($prefix, Unit::Byte, $len + 1), rest),
-                _ => return Err(TokenizerError::UnexpectedCharacter(current)),
-            }
-        }};
-    }
-
-    while !input.is_empty() {
+impl<'a> Lexer<'a> {
+    pub fn new(input: &'a str) -> Self {
+        let mut input = input.as_bytes();
         let old_len = input.len();
         input = input.trim_ascii_start();
-        current += old_len - input.len();
+
+        Self {
+            input: Some(input),
+            current: old_len - input.len(),
+        }
+    }
+
+    #[inline]
+    fn trim_whitespace(&mut self) {
+        if let Some(mut input) = self.input {
+            let old_len = input.len();
+            input = input.trim_ascii_start();
+            self.input = Some(input);
+            self.current += old_len - input.len();
+        }
+    }
+}
+
+impl Iterator for Lexer<'_> {
+    type Item = Result<Token, LexerError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.trim_whitespace();
+
+        let input = self.input?;
+        if input.is_empty() {
+            self.input = None;
+            return Some(Ok(token!(Eof, self.current..self.current)));
+        }
+
+        macro_rules! tok {
+            ($kind:ident, $len:literal) => {
+                token!($kind, self.current..(self.current + $len))
+            };
+            ($kind:ident($($val:expr),+), $len:expr) => {
+                token!($kind($($val),+), self.current..(self.current + $len))
+            };
+        }
+
+        macro_rules! unit {
+            ($prefix:expr, $unit:expr, $len:expr) => {
+                token!(
+                    Unit(FullUnit($prefix, $unit)),
+                    self.current..(self.current + $len)
+                )
+            };
+            ($unit:expr, $len:expr) => {
+                unit!(UnitPrefix::None, $unit, $len)
+            };
+        }
+
+        macro_rules! parse_as {
+            ($rad:ident, $input:ident, $offset:expr) => {{
+                paste! {
+                    let (val, rest) = match [<parse_ $rad _nr>]($input) {
+                        Ok(val) => val,
+                        Err(e) => return Some(Err(LexerError::InvalidDigit(self.current + $offset, e))),
+                    };
+                    let len = input.len() - rest.len();
+                    (tok!(Integer(val), len), rest)
+                }
+            }};
+            ($rad:ident, $input:ident) => {
+                parse_as!($rad, $input, 0)
+            };
+        }
+
+        macro_rules! parse_unit {
+            ($input:ident, $prefix:expr, $len:literal) => {{
+                match $input {
+                    [b'b', rest @ ..] => (unit!($prefix, Unit::Bit, $len + 1), rest),
+                    [b'B', rest @ ..] => (unit!($prefix, Unit::Byte, $len + 1), rest),
+                    _ => return Some(Err(LexerError::UnexpectedCharacter(self.current))),
+                }
+            }};
+        }
 
         let (token, rest) = match input {
             // Single character tokens
@@ -133,30 +153,26 @@ pub(crate) fn tokenize(s: &str) -> Result<Vec<Token>, TokenizerError> {
                 _ => parse_as!(dec, input),
             },
             [b'0'..=b'9', ..] => parse_as!(dec, input),
-            [b'k' | b'K', b'i' | b'I', rest @ ..] => parse_unit!(rest, UP::Kibi, 2),
-            [b'm' | b'M', b'i' | b'I', rest @ ..] => parse_unit!(rest, UP::Mebi, 2),
-            [b'g' | b'G', b'i' | b'I', rest @ ..] => parse_unit!(rest, UP::Gibi, 2),
-            [b't' | b'T', b'i' | b'I', rest @ ..] => parse_unit!(rest, UP::Tebi, 2),
-            [b'p' | b'P', b'i' | b'I', rest @ ..] => parse_unit!(rest, UP::Pebi, 2),
-            [b'e' | b'E', b'i' | b'I', rest @ ..] => parse_unit!(rest, UP::Exbi, 2),
-            [b'k' | b'K', rest @ ..] => parse_unit!(rest, UP::Kilo, 1),
-            [b'm' | b'M', rest @ ..] => parse_unit!(rest, UP::Mega, 1),
-            [b'g' | b'G', rest @ ..] => parse_unit!(rest, UP::Giga, 1),
-            [b't' | b'T', rest @ ..] => parse_unit!(rest, UP::Mega, 1),
-            [b'p' | b'P', rest @ ..] => parse_unit!(rest, UP::Peta, 1),
-            [b'e' | b'E', rest @ ..] => parse_unit!(rest, UP::Exa, 1),
-            [] => continue,
-            _ => return Err(TokenizerError::UnexpectedCharacter(current)),
+            [b'k' | b'K', b'i' | b'I', rest @ ..] => parse_unit!(rest, UnitPrefix::Kibi, 2),
+            [b'm' | b'M', b'i' | b'I', rest @ ..] => parse_unit!(rest, UnitPrefix::Mebi, 2),
+            [b'g' | b'G', b'i' | b'I', rest @ ..] => parse_unit!(rest, UnitPrefix::Gibi, 2),
+            [b't' | b'T', b'i' | b'I', rest @ ..] => parse_unit!(rest, UnitPrefix::Tebi, 2),
+            [b'p' | b'P', b'i' | b'I', rest @ ..] => parse_unit!(rest, UnitPrefix::Pebi, 2),
+            [b'e' | b'E', b'i' | b'I', rest @ ..] => parse_unit!(rest, UnitPrefix::Exbi, 2),
+            [b'k' | b'K', rest @ ..] => parse_unit!(rest, UnitPrefix::Kilo, 1),
+            [b'm' | b'M', rest @ ..] => parse_unit!(rest, UnitPrefix::Mega, 1),
+            [b'g' | b'G', rest @ ..] => parse_unit!(rest, UnitPrefix::Giga, 1),
+            [b't' | b'T', rest @ ..] => parse_unit!(rest, UnitPrefix::Mega, 1),
+            [b'p' | b'P', rest @ ..] => parse_unit!(rest, UnitPrefix::Peta, 1),
+            [b'e' | b'E', rest @ ..] => parse_unit!(rest, UnitPrefix::Exa, 1),
+            _ => return Some(Err(LexerError::UnexpectedCharacter(self.current))),
         };
 
-        current += token.len();
-        tokens.push(token);
+        self.current += token.len();
+        self.input = Some(rest);
 
-        input = rest;
+        Some(Ok(token))
     }
-    tokens.push(token!(Eof, current..current));
-
-    Ok(tokens)
 }
 
 #[cfg(test)]
@@ -195,10 +211,15 @@ mod tests {
         assert!(rest.is_empty());
     }
 
+    macro_rules! lex {
+        ($s:expr) => {
+            Lexer::new($s).collect::<Result<Vec<_>, _>>()
+        };
+    }
+
     #[test]
-    fn test_tokenize() {
-        let input = "42 + 42";
-        let tokens = tokenize(input).unwrap();
+    fn test_lexer() {
+        let tokens = lex!("42 + 42").unwrap();
         assert_eq!(
             tokens,
             vec![
@@ -211,9 +232,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_unit_prefix() {
-        let input = "42Kib";
-        let tokens = tokenize(input).unwrap();
+    fn test_lexer_unit_prefix() {
+        let tokens = lex!("42Kib").unwrap();
         assert_eq!(
             tokens,
             vec![
@@ -225,9 +245,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_unit() {
-        let input = "42B";
-        let tokens = tokenize(input).unwrap();
+    fn test_lexer_unit() {
+        let tokens = lex!("42B").unwrap();
         assert_eq!(
             tokens,
             vec![
@@ -239,9 +258,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_unit_prefix_and_unit() {
-        let input = "42KiB";
-        let tokens = tokenize(input).unwrap();
+    fn test_lexer_unit_prefix_and_unit() {
+        let tokens = lex!("42KiB").unwrap();
         assert_eq!(
             tokens,
             vec![
@@ -253,9 +271,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_unit_and_unit_prefix() {
-        let input = "42KB";
-        let tokens = tokenize(input).unwrap();
+    fn test_lexer_unit_and_unit_prefix() {
+        let tokens = lex!("42KB").unwrap();
         assert_eq!(
             tokens,
             vec![
@@ -267,9 +284,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_long_expression() {
-        let input = "12KiB / 02MiB * 42Gib -(42TiB + 42PiB)+ 42EiB";
-        let tokens = tokenize(input).unwrap();
+    fn test_lexer_long_expression() {
+        let tokens = lex!("12KiB / 02MiB * 42Gib -(42TiB + 42PiB)+ 42EiB").unwrap();
         assert_eq!(
             tokens,
             vec![
@@ -298,35 +314,32 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_single_digit() {
-        let tokens = tokenize("0").unwrap();
+    fn test_lexer_single_digit() {
+        let tokens = lex!("0").unwrap();
         assert_eq!(tokens, vec![token!(Integer(0), 0..1), token!(Eof, 1..1),]);
     }
 
     #[test]
-    fn test_tokenize_invalid_input() {
-        let res = tokenize("42 + 42x").unwrap_err();
-        assert_eq!(res, TokenizerError::UnexpectedCharacter(7));
+    fn test_lexer_invalid_input() {
+        let res = lex!("42 + 42x").unwrap_err();
+        assert_eq!(res, LexerError::UnexpectedCharacter(7));
 
-        let res = tokenize("0x").unwrap_err();
-        assert_eq!(res, TokenizerError::InvalidDigit(2, ParseIntError::Empty));
+        let res = lex!("0x").unwrap_err();
+        assert_eq!(res, LexerError::InvalidDigit(2, ParseIntError::Empty));
 
-        let res = tokenize("0b").unwrap_err();
-        assert_eq!(res, TokenizerError::InvalidDigit(2, ParseIntError::Empty));
+        let res = lex!("0b").unwrap_err();
+        assert_eq!(res, LexerError::InvalidDigit(2, ParseIntError::Empty));
 
-        let res = tokenize("0o").unwrap_err();
-        assert_eq!(res, TokenizerError::InvalidDigit(2, ParseIntError::Empty));
+        let res = lex!("0o").unwrap_err();
+        assert_eq!(res, LexerError::InvalidDigit(2, ParseIntError::Empty));
 
-        let res = tokenize("0xg").unwrap_err();
-        assert_eq!(res, TokenizerError::InvalidDigit(2, ParseIntError::Empty));
+        let res = lex!("0xg").unwrap_err();
+        assert_eq!(res, LexerError::InvalidDigit(2, ParseIntError::Empty));
 
-        let res = tokenize("0a").unwrap_err();
-        assert_eq!(res, TokenizerError::UnexpectedCharacter(1));
+        let res = lex!("0a").unwrap_err();
+        assert_eq!(res, LexerError::UnexpectedCharacter(1));
 
-        let res = tokenize("ak").unwrap_err();
-        assert_eq!(res, TokenizerError::UnexpectedCharacter(0));
-
-        let res = tokenize("").unwrap_err();
-        assert_eq!(res, TokenizerError::UnexpectedEndOfInput);
+        let res = lex!("ak").unwrap_err();
+        assert_eq!(res, LexerError::UnexpectedCharacter(0));
     }
 }

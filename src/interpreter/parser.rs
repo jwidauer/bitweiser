@@ -3,6 +3,7 @@ use thiserror::Error;
 
 use super::{
     expr::{Expr, OperatorExpr as OE},
+    lexer::{Lexer, LexerError},
     token::{Token, TokenKind},
 };
 
@@ -31,25 +32,29 @@ enum ParserError {
     UnexpectedToken(Token),
     #[error("Expected end of expression.")]
     ExpectedEof,
+    #[error("Expected unit.")]
+    ExpectedUnit,
+    #[error(transparent)]
+    LexerError(#[from] LexerError),
 }
 
 pub struct Parser<'a> {
-    iter: std::iter::Peekable<std::slice::Iter<'a, Token>>,
+    iter: std::iter::Peekable<Lexer<'a>>,
 }
 
 macro_rules! bump_if {
     ($self:ident, $($kind:ident),+) => {
-        matches!($self.peek(), $(Some(TokenKind::$kind))|+).then(|| $self.bump())
+        matches!($self.peek()?, $(Some(TokenKind::$kind))|+).then(|| $self.bump())
     };
     ($self:ident, $($kind:ident(_)),+) => {
-        matches!($self.peek(), $(Some(TokenKind::$kind(_)))|+).then(|| $self.bump())
+        matches!($self.peek()?, $(Some(TokenKind::$kind(_)))|+).then(|| $self.bump())
     };
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: &'a [Token]) -> Self {
+    pub fn new(lexer: Lexer<'a>) -> Self {
         Self {
-            iter: tokens.iter().peekable(),
+            iter: lexer.peekable(),
         }
     }
 
@@ -122,7 +127,7 @@ impl<'a> Parser<'a> {
     }
 
     fn primary(&mut self) -> Result<Expr> {
-        match self.peek() {
+        match self.peek()? {
             Some(TokenKind::Integer(_)) => {
                 let kind = self.bump();
                 let unit = bump_if!(self, Unit(_));
@@ -143,15 +148,19 @@ impl<'a> Parser<'a> {
     }
 
     fn bump(&mut self) -> Token {
-        self.iter.next().unwrap().clone()
+        self.iter.next().unwrap().unwrap().clone()
     }
 
-    fn peek(&mut self) -> Option<TokenKind> {
-        self.iter.peek().map(|t| t.kind())
+    fn peek(&mut self) -> Result<Option<TokenKind>, LexerError> {
+        self.iter
+            .peek()
+            .map(ToOwned::to_owned)
+            .transpose()
+            .map(|o| o.map(|t| t.kind()))
     }
 
-    fn consume_unit(&mut self) -> Result<Token> {
-        bump_if!(self, Unit(_)).ok_or(anyhow::anyhow!("Expected unit."))
+    fn consume_unit(&mut self) -> Result<Token, ParserError> {
+        bump_if!(self, Unit(_)).ok_or(ParserError::ExpectedUnit)
     }
 }
 
@@ -159,7 +168,7 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
     use crate::interpreter::{
-        lexer::tokenize,
+        lexer::Lexer,
         token::{token, FullUnit, Unit},
         unit_prefix::UnitPrefix,
     };
@@ -167,8 +176,7 @@ mod tests {
     #[test]
     fn test_parser_single_token() {
         let input = "1234";
-        let tokens = tokenize(input).unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(Lexer::new(input));
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
@@ -182,8 +190,7 @@ mod tests {
     #[test]
     fn test_parser_binary_expr() {
         let input = "1234 + 5678";
-        let tokens = tokenize(input).unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(Lexer::new(input));
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
@@ -204,8 +211,7 @@ mod tests {
     #[test]
     fn test_parser_binary_expr_with_precedence() {
         let input = "1234 * 5678 + 91011";
-        let tokens = tokenize(input).unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(Lexer::new(input));
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
@@ -233,8 +239,7 @@ mod tests {
     #[test]
     fn test_parser_nested_binary_expr() {
         let input = "1234 + 5678 * 91011 / 121314";
-        let tokens = tokenize(input).unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(Lexer::new(input));
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
@@ -269,8 +274,7 @@ mod tests {
     #[test]
     fn test_parser_unary_expr() {
         let input = "-1234";
-        let tokens = tokenize(input).unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(Lexer::new(input));
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
@@ -287,8 +291,7 @@ mod tests {
     #[test]
     fn test_parser_grouped_expr() {
         let input = "(1234 + 5678)";
-        let tokens = tokenize(input).unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(Lexer::new(input));
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
@@ -309,8 +312,7 @@ mod tests {
     #[test]
     fn test_parser_type_cast_expr() {
         let input = "1234 as KiB";
-        let tokens = tokenize(input).unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(Lexer::new(input));
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,
@@ -327,8 +329,7 @@ mod tests {
     #[test]
     fn test_parser_int_literal_with_unit() {
         let input = "1234 KiB";
-        let tokens = tokenize(input).unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(Lexer::new(input));
         let expr = parser.parse().unwrap();
         assert_eq!(
             expr,

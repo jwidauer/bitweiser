@@ -20,10 +20,8 @@ impl Interpreter {
     }
 
     pub fn interpret(&self, input: &str) -> Result<Value> {
-        // let lexer = lexer::Lexer::new(input);
-        // let mut parser = parser::Parser::new(lexer);
-        let tokens = lexer::tokenize(input)?;
-        let mut parser = parser::Parser::new(&tokens);
+        let lexer = lexer::Lexer::new(input);
+        let mut parser = parser::Parser::new(lexer);
         let expr = parser.parse()?;
         evaluate(&expr)
     }
