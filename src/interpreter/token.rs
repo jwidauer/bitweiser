@@ -33,7 +33,7 @@ impl Display for Unit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FullUnit(pub UnitPrefix, pub Unit);
+pub struct FullUnit(pub UnitPrefix, pub Unit);
 
 impl FullUnit {
     pub fn new(prefix: UnitPrefix, unit: Unit) -> Self {
@@ -73,7 +73,7 @@ impl Display for FullUnit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     // Single character tokens
     Minus,
@@ -111,25 +111,11 @@ impl Display for TokenKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     kind: TokenKind,
     loc: Range<usize>,
 }
-
-macro_rules! token {
-    ($kind:ident, $loc:expr) => {
-        $crate::interpreter::token::Token::new($crate::interpreter::token::TokenKind::$kind, $loc)
-    };
-    ($kind:ident($($val:expr),+), $loc:expr) => {
-        $crate::interpreter::token::Token::new(
-            $crate::interpreter::token::TokenKind::$kind($($val),+),
-            $loc,
-        )
-    };
-}
-
-pub(super) use token;
 
 impl Token {
     pub fn new(kind: TokenKind, loc: Range<usize>) -> Self {
@@ -154,6 +140,26 @@ impl Display for Token {
         write!(f, "{}", self.kind)
     }
 }
+
+impl From<Token> for miette::SourceSpan {
+    fn from(token: Token) -> Self {
+        token.loc().into()
+    }
+}
+
+macro_rules! token {
+    ($kind:ident, $loc:expr) => {
+        $crate::interpreter::token::Token::new($crate::interpreter::token::TokenKind::$kind, $loc)
+    };
+    ($kind:ident($($val:expr),+), $loc:expr) => {
+        $crate::interpreter::token::Token::new(
+            $crate::interpreter::token::TokenKind::$kind($($val),+),
+            $loc,
+        )
+    };
+}
+
+pub(super) use token;
 
 #[cfg(test)]
 mod test {

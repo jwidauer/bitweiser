@@ -1,3 +1,4 @@
+use miette::Diagnostic;
 use paste::paste;
 use thiserror::Error;
 
@@ -7,12 +8,31 @@ use super::{
     unit_prefix::UnitPrefix,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum LexerError {
-    #[error("Unexpected character at index {0}")]
-    UnexpectedCharacter(usize),
-    #[error("Invalid digit at index {0}")]
-    InvalidDigit(usize, #[source] super::num::ParseIntError),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error, Diagnostic)]
+pub enum LexErrorKind {
+    #[error("Unexpected character")]
+    UnexpectedCharacter,
+    #[error("Invalid digit")]
+    InvalidDigit(#[source] super::num::ParseIntError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error, Diagnostic)]
+#[error("{}", kind)]
+pub struct LexError {
+    kind: LexErrorKind,
+    #[label = "here"]
+    loc: usize,
+}
+
+impl LexError {
+    pub fn new(kind: LexErrorKind, loc: usize) -> Self {
+        Self { kind, loc }
+    }
+
+    #[inline]
+    pub fn loc(&self) -> usize {
+        self.loc
+    }
 }
 
 #[inline]
@@ -72,35 +92,40 @@ impl<'a> Lexer<'a> {
             self.current += old_len - input.len();
         }
     }
+
+    #[inline]
+    const fn span(&self, len: usize) -> std::ops::Range<usize> {
+        self.current..(self.current + len)
+    }
 }
 
 impl Iterator for Lexer<'_> {
-    type Item = Result<Token, LexerError>;
+    type Item = Result<Token, LexError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        use LexError as LE;
+        use LexErrorKind as LEK;
+
         self.trim_whitespace();
 
         let input = self.input?;
         if input.is_empty() {
             self.input = None;
-            return Some(Ok(token!(Eof, self.current..self.current)));
+            return Some(Ok(token!(Eof, self.span(0))));
         }
 
         macro_rules! tok {
             ($kind:ident, $len:literal) => {
-                token!($kind, self.current..(self.current + $len))
+                token!($kind, self.span($len))
             };
             ($kind:ident($($val:expr),+), $len:expr) => {
-                token!($kind($($val),+), self.current..(self.current + $len))
+                token!($kind($($val),+), self.span($len))
             };
         }
 
         macro_rules! unit {
             ($prefix:expr, $unit:expr, $len:expr) => {
-                token!(
-                    Unit(FullUnit($prefix, $unit)),
-                    self.current..(self.current + $len)
-                )
+                token!(Unit(FullUnit($prefix, $unit)), self.span($len))
             };
             ($unit:expr, $len:expr) => {
                 unit!(UnitPrefix::None, $unit, $len)
@@ -108,11 +133,11 @@ impl Iterator for Lexer<'_> {
         }
 
         macro_rules! parse_as {
-            ($rad:ident, $input:ident, $offset:expr) => {{
+            ($rad:ident, $input:ident, $offset:literal) => {{
                 paste! {
                     let (val, rest) = match [<parse_ $rad _nr>]($input) {
                         Ok(val) => val,
-                        Err(e) => return Some(Err(LexerError::InvalidDigit(self.current + $offset, e))),
+                        Err(e) => return Some(Err(LE::new(LEK::InvalidDigit(e),self.current + $offset))),
                     };
                     let len = input.len() - rest.len();
                     (tok!(Integer(val), len), rest)
@@ -128,7 +153,7 @@ impl Iterator for Lexer<'_> {
                 match $input {
                     [b'b', rest @ ..] => (unit!($prefix, Unit::Bit, $len + 1), rest),
                     [b'B', rest @ ..] => (unit!($prefix, Unit::Byte, $len + 1), rest),
-                    _ => return Some(Err(LexerError::UnexpectedCharacter(self.current))),
+                    _ => return Some(Err(LE::new(LEK::UnexpectedCharacter, self.current))),
                 }
             }};
         }
@@ -162,10 +187,10 @@ impl Iterator for Lexer<'_> {
             [b'k' | b'K', rest @ ..] => parse_unit!(rest, UnitPrefix::Kilo, 1),
             [b'm' | b'M', rest @ ..] => parse_unit!(rest, UnitPrefix::Mega, 1),
             [b'g' | b'G', rest @ ..] => parse_unit!(rest, UnitPrefix::Giga, 1),
-            [b't' | b'T', rest @ ..] => parse_unit!(rest, UnitPrefix::Mega, 1),
+            [b't' | b'T', rest @ ..] => parse_unit!(rest, UnitPrefix::Tera, 1),
             [b'p' | b'P', rest @ ..] => parse_unit!(rest, UnitPrefix::Peta, 1),
             [b'e' | b'E', rest @ ..] => parse_unit!(rest, UnitPrefix::Exa, 1),
-            _ => return Some(Err(LexerError::UnexpectedCharacter(self.current))),
+            _ => return Some(Err(LE::new(LEK::UnexpectedCharacter, self.current))),
         };
 
         self.current += token.len();
@@ -321,25 +346,28 @@ mod tests {
 
     #[test]
     fn test_lexer_invalid_input() {
+        use LexError as LE;
+        use LexErrorKind as LEK;
+
         let res = lex!("42 + 42x").unwrap_err();
-        assert_eq!(res, LexerError::UnexpectedCharacter(7));
+        assert_eq!(res, LE::new(LEK::UnexpectedCharacter, 7));
 
         let res = lex!("0x").unwrap_err();
-        assert_eq!(res, LexerError::InvalidDigit(2, ParseIntError::Empty));
+        assert_eq!(res, LE::new(LEK::InvalidDigit(ParseIntError::Empty), 2));
 
         let res = lex!("0b").unwrap_err();
-        assert_eq!(res, LexerError::InvalidDigit(2, ParseIntError::Empty));
+        assert_eq!(res, LE::new(LEK::InvalidDigit(ParseIntError::Empty), 2));
 
         let res = lex!("0o").unwrap_err();
-        assert_eq!(res, LexerError::InvalidDigit(2, ParseIntError::Empty));
+        assert_eq!(res, LE::new(LEK::InvalidDigit(ParseIntError::Empty), 2));
 
         let res = lex!("0xg").unwrap_err();
-        assert_eq!(res, LexerError::InvalidDigit(2, ParseIntError::Empty));
+        assert_eq!(res, LE::new(LEK::InvalidDigit(ParseIntError::Empty), 2));
 
         let res = lex!("0a").unwrap_err();
-        assert_eq!(res, LexerError::UnexpectedCharacter(1));
+        assert_eq!(res, LE::new(LEK::UnexpectedCharacter, 1));
 
         let res = lex!("ak").unwrap_err();
-        assert_eq!(res, LexerError::UnexpectedCharacter(0));
+        assert_eq!(res, LE::new(LEK::UnexpectedCharacter, 0));
     }
 }

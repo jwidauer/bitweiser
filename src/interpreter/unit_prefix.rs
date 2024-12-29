@@ -15,7 +15,7 @@ const PEBI: u64 = 1024u64.pow(5);
 const EXBI: u64 = 1024u64.pow(6);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UnitPrefix {
+pub enum UnitPrefix {
     None,
     Kilo,
     Mega,
@@ -76,7 +76,7 @@ impl UnitPrefix {
 }
 
 impl TryFrom<&str> for UnitPrefix {
-    type Error = anyhow::Error;
+    type Error = miette::Error;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let value = value.to_lowercase();
@@ -94,14 +94,14 @@ impl TryFrom<&str> for UnitPrefix {
             "ti" => Self::Tebi,
             "pi" => Self::Pebi,
             "ei" => Self::Exbi,
-            _ => anyhow::bail!("Invalid unit prefix: {}", value),
+            _ => miette::bail!("Invalid unit prefix: {}", value),
         };
         Ok(val)
     }
 }
 
 impl TryFrom<u64> for UnitPrefix {
-    type Error = anyhow::Error;
+    type Error = miette::Error;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let val = match value {
@@ -118,7 +118,7 @@ impl TryFrom<u64> for UnitPrefix {
             TEBI => Self::Tebi,
             PEBI => Self::Pebi,
             EXBI => Self::Exbi,
-            _ => anyhow::bail!("Invalid unit prefix: {}", value),
+            _ => miette::bail!("Invalid unit prefix: {}", value),
         };
         Ok(val)
     }

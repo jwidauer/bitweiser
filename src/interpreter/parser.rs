@@ -1,10 +1,11 @@
-use anyhow::Result;
+use miette::Diagnostic;
 use thiserror::Error;
 
 use super::{
     expr::{Expr, OperatorExpr as OE},
-    lexer::{Lexer, LexerError},
+    lexer::{LexError, Lexer},
     token::{Token, TokenKind},
+    SyntaxErrorKind,
 };
 
 // Grammar:
@@ -26,16 +27,44 @@ use super::{
 // BINUNITPREFIX -> DECUNITPREFIX "i" ;
 // DECUNITPREFIX -> "k" | "m" | "g" | "t" | "p" | "e" | "K" | "M" | "G" | "T" | "P" | "E" ;
 
-#[derive(Debug, Clone, PartialEq, Error)]
-enum ParserError {
-    #[error("Unexpected token: {0}")]
-    UnexpectedToken(Token),
-    #[error("Expected end of expression.")]
+#[derive(Debug, Clone, PartialEq, Error, Diagnostic)]
+pub enum ParseErrorKind {
+    #[error("Expected {0}")]
+    UnexpectedToken(&'static str),
+    #[error("Expected expression")]
+    ExpectedExpression,
+    #[error("Expected end of expression")]
     ExpectedEof,
-    #[error("Expected unit.")]
+    #[error("Expected unit")]
     ExpectedUnit,
-    #[error(transparent)]
-    LexerError(#[from] LexerError),
+}
+
+#[derive(Debug, Clone, PartialEq, Error, Diagnostic)]
+#[error("{}, found '{}'", kind, token)]
+pub struct ParseError {
+    kind: ParseErrorKind,
+    #[label = "here"]
+    token: Token,
+}
+
+impl ParseError {
+    fn new(kind: ParseErrorKind, token: Token) -> Self {
+        Self { kind, token }
+    }
+
+    #[inline]
+    pub fn token(&self) -> &Token {
+        &self.token
+    }
+}
+
+macro_rules! error {
+    ($kind:ident, $token:expr) => {
+        ParseError::new(ParseErrorKind::$kind, $token)
+    };
+    ($kind:ident($($arg:expr),+), $token:expr) => {
+        ParseError::new(ParseErrorKind::$kind($($arg),+), $token)
+    };
 }
 
 pub struct Parser<'a> {
@@ -58,21 +87,21 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Result<Expr> {
+    pub fn parse(&mut self) -> Result<Expr, SyntaxErrorKind> {
         let expr = self.expression()?;
 
         if bump_if!(self, Eof).is_some() {
             return Ok(expr);
         }
 
-        anyhow::bail!("Expected end of expression, found {}.", self.bump().kind());
+        Err(error!(ExpectedEof, self.bump()).into())
     }
 
-    fn expression(&mut self) -> Result<Expr> {
+    fn expression(&mut self) -> Result<Expr, SyntaxErrorKind> {
         self.term()
     }
 
-    fn term(&mut self) -> Result<Expr> {
+    fn term(&mut self) -> Result<Expr, SyntaxErrorKind> {
         let mut expr = self.factor()?;
 
         while let Some(operator) = bump_if!(self, Minus, Plus) {
@@ -87,7 +116,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn factor(&mut self) -> Result<Expr> {
+    fn factor(&mut self) -> Result<Expr, SyntaxErrorKind> {
         let mut expr = self.type_cast()?;
 
         while let Some(operator) = bump_if!(self, Slash, Star) {
@@ -102,7 +131,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn type_cast(&mut self) -> Result<Expr> {
+    fn type_cast(&mut self) -> Result<Expr, SyntaxErrorKind> {
         let mut expr = self.unary()?;
 
         if bump_if!(self, As).is_some() {
@@ -117,7 +146,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn unary(&mut self) -> Result<Expr> {
+    fn unary(&mut self) -> Result<Expr, SyntaxErrorKind> {
         if let Some(operator) = bump_if!(self, Minus) {
             let right = Box::new(self.unary()?);
             return Ok(Expr::Operator(OE::Unary { operator, right }));
@@ -126,7 +155,7 @@ impl<'a> Parser<'a> {
         self.primary()
     }
 
-    fn primary(&mut self) -> Result<Expr> {
+    fn primary(&mut self) -> Result<Expr, SyntaxErrorKind> {
         match self.peek()? {
             Some(TokenKind::Integer(_)) => {
                 let kind = self.bump();
@@ -136,22 +165,20 @@ impl<'a> Parser<'a> {
             Some(TokenKind::LeftParen) => {
                 self.bump();
                 let expression = Box::new(self.expression()?);
-                if bump_if!(self, RightParen).is_none() {
-                    anyhow::bail!("Expected ')' after expression.")
-                }
+                self.consume_r_paren()?;
                 return Ok(Expr::Grouping(expression));
             }
             _ => {}
         }
 
-        anyhow::bail!("Expected expression")
+        Err(error!(ExpectedExpression, self.bump()).into())
     }
 
     fn bump(&mut self) -> Token {
         self.iter.next().unwrap().unwrap().clone()
     }
 
-    fn peek(&mut self) -> Result<Option<TokenKind>, LexerError> {
+    fn peek(&mut self) -> Result<Option<TokenKind>, LexError> {
         self.iter
             .peek()
             .map(ToOwned::to_owned)
@@ -159,8 +186,12 @@ impl<'a> Parser<'a> {
             .map(|o| o.map(|t| t.kind()))
     }
 
-    fn consume_unit(&mut self) -> Result<Token, ParserError> {
-        bump_if!(self, Unit(_)).ok_or(ParserError::ExpectedUnit)
+    fn consume_unit(&mut self) -> Result<Token, SyntaxErrorKind> {
+        bump_if!(self, Unit(_)).ok_or(error!(ExpectedUnit, self.bump()).into())
+    }
+
+    fn consume_r_paren(&mut self) -> Result<Token, SyntaxErrorKind> {
+        bump_if!(self, RightParen).ok_or(error!(UnexpectedToken(")"), self.bump()).into())
     }
 }
 
@@ -173,11 +204,15 @@ mod tests {
         unit_prefix::UnitPrefix,
     };
 
+    macro_rules! parse {
+        ($input:expr) => {
+            Parser::new(Lexer::new($input)).parse()
+        };
+    }
+
     #[test]
     fn test_parser_single_token() {
-        let input = "1234";
-        let mut parser = Parser::new(Lexer::new(input));
-        let expr = parser.parse().unwrap();
+        let expr = parse!("1234").unwrap();
         assert_eq!(
             expr,
             Expr::Literal {
@@ -189,9 +224,7 @@ mod tests {
 
     #[test]
     fn test_parser_binary_expr() {
-        let input = "1234 + 5678";
-        let mut parser = Parser::new(Lexer::new(input));
-        let expr = parser.parse().unwrap();
+        let expr = parse!("1234 + 5678").unwrap();
         assert_eq!(
             expr,
             Expr::Operator(OE::ArithmeticOrLogical {
@@ -210,9 +243,7 @@ mod tests {
 
     #[test]
     fn test_parser_binary_expr_with_precedence() {
-        let input = "1234 * 5678 + 91011";
-        let mut parser = Parser::new(Lexer::new(input));
-        let expr = parser.parse().unwrap();
+        let expr = parse!("1234 * 5678 + 91011").unwrap();
         assert_eq!(
             expr,
             Expr::Operator(OE::ArithmeticOrLogical {
@@ -238,9 +269,7 @@ mod tests {
 
     #[test]
     fn test_parser_nested_binary_expr() {
-        let input = "1234 + 5678 * 91011 / 121314";
-        let mut parser = Parser::new(Lexer::new(input));
-        let expr = parser.parse().unwrap();
+        let expr = parse!("1234 + 5678 * 91011 / 121314").unwrap();
         assert_eq!(
             expr,
             Expr::Operator(OE::ArithmeticOrLogical {
@@ -273,9 +302,7 @@ mod tests {
 
     #[test]
     fn test_parser_unary_expr() {
-        let input = "-1234";
-        let mut parser = Parser::new(Lexer::new(input));
-        let expr = parser.parse().unwrap();
+        let expr = parse!("-1234").unwrap();
         assert_eq!(
             expr,
             Expr::Operator(OE::Unary {
@@ -290,9 +317,7 @@ mod tests {
 
     #[test]
     fn test_parser_grouped_expr() {
-        let input = "(1234 + 5678)";
-        let mut parser = Parser::new(Lexer::new(input));
-        let expr = parser.parse().unwrap();
+        let expr = parse!("(1234 + 5678)").unwrap();
         assert_eq!(
             expr,
             Expr::Grouping(Box::new(Expr::Operator(OE::ArithmeticOrLogical {
@@ -311,9 +336,7 @@ mod tests {
 
     #[test]
     fn test_parser_type_cast_expr() {
-        let input = "1234 as KiB";
-        let mut parser = Parser::new(Lexer::new(input));
-        let expr = parser.parse().unwrap();
+        let expr = parse!("1234 as KiB").unwrap();
         assert_eq!(
             expr,
             Expr::Operator(OE::TypeCast {
@@ -328,9 +351,7 @@ mod tests {
 
     #[test]
     fn test_parser_int_literal_with_unit() {
-        let input = "1234 KiB";
-        let mut parser = Parser::new(Lexer::new(input));
-        let expr = parser.parse().unwrap();
+        let expr = parse!("1234 KiB").unwrap();
         assert_eq!(
             expr,
             Expr::Literal {

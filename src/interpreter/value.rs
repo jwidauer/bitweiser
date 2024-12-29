@@ -1,10 +1,19 @@
-use anyhow::Result;
+use miette::Diagnostic;
 use std::{
     fmt::Display,
     ops::{Add, Neg, Sub},
 };
+use thiserror::Error;
 
 use super::token::FullUnit;
+
+#[derive(Debug, Clone, Copy, PartialEq, Error, Diagnostic)]
+pub enum ValueErrorKind {
+    #[error("Cannot divide by a value with a unit")]
+    DivisionByUnit,
+    #[error("Cannot multiply two values with units")]
+    MultiplicationByUnit,
+}
 
 pub struct Value {
     value: f64,
@@ -42,9 +51,9 @@ impl Value {
 
     /// Returns the result of multiplying `self` by `rhs`, but only if one or both of the two values are
     /// unitless.
-    pub fn try_mul(&self, rhs: Self) -> Result<Self> {
+    pub fn try_mul(&self, rhs: Self) -> Result<Self, ValueErrorKind> {
         if self.unit.is_some() && rhs.unit.is_some() {
-            anyhow::bail!("Cannot multiply two values with units");
+            return Err(ValueErrorKind::MultiplicationByUnit);
         }
 
         let unit = self.unit.or(rhs.unit);
@@ -53,64 +62,46 @@ impl Value {
 
     /// Returns the result of dividing `self` by `rhs`, but only if the `rhs` or both of the two values are
     /// unitless.
-    pub fn try_div(&self, rhs: Self) -> Result<Self> {
+    pub fn try_div(&self, rhs: Self) -> Result<Self, ValueErrorKind> {
         if rhs.unit.is_some() {
-            anyhow::bail!("Cannot divide by a value with a unit");
+            return Err(ValueErrorKind::DivisionByUnit);
         }
 
         Ok(Self::new(self.value / rhs.value, self.unit))
     }
 }
 
-impl Sub for Value {
-    type Output = Self;
+macro_rules! impl_op_for_value {
+    ($trait:ident, $op:ident) => {
+        impl $trait for Value {
+            type Output = Self;
 
-    fn sub(self, rhs: Self) -> Self::Output {
-        if self.unit == rhs.unit {
-            return Self::new(self.value.sub(rhs.value), self.unit);
+            fn $op(self, rhs: Self) -> Self::Output {
+                if self.unit == rhs.unit {
+                    return Self::new(self.value.$op(rhs.value), self.unit);
+                }
+
+                let (left, right) = if let (Some(left), Some(right)) = (self.unit, rhs.unit) {
+                    (left, right)
+                } else {
+                    let unit = self.unit.or(rhs.unit);
+                    return Self::new(self.value.$op(rhs.value), unit);
+                };
+
+                let precise = std::cmp::min(left, right);
+                let value = self
+                    .convert_to(precise)
+                    .value
+                    .$op(rhs.convert_to(precise).value);
+
+                Self::new(value, Some(precise))
+            }
         }
-
-        let (left, right) = if let (Some(left), Some(right)) = (self.unit, rhs.unit) {
-            (left, right)
-        } else {
-            let unit = self.unit.or(rhs.unit);
-            return Self::new(self.value.sub(rhs.value), unit);
-        };
-
-        let precise = std::cmp::min(left, right);
-        let value = self
-            .convert_to(precise)
-            .value
-            .sub(rhs.convert_to(precise).value);
-
-        Self::new(value, Some(precise))
-    }
+    };
 }
 
-impl Add for Value {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        if self.unit == rhs.unit {
-            return Self::new(self.value.add(rhs.value), self.unit);
-        }
-
-        let (left, right) = if let (Some(left), Some(right)) = (self.unit, rhs.unit) {
-            (left, right)
-        } else {
-            let unit = self.unit.or(rhs.unit);
-            return Self::new(self.value.add(rhs.value), unit);
-        };
-
-        let precise = std::cmp::min(left, right);
-        let value = self
-            .convert_to(precise)
-            .value
-            .add(rhs.convert_to(precise).value);
-
-        Self::new(value, Some(precise))
-    }
-}
+impl_op_for_value!(Sub, sub);
+impl_op_for_value!(Add, add);
 
 impl Neg for Value {
     type Output = Self;

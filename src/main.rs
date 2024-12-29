@@ -1,8 +1,8 @@
 use std::io::Write;
 
-use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
+use miette::{IntoDiagnostic, Result};
 
 mod format;
 mod interpreter;
@@ -38,9 +38,9 @@ fn repl() -> Result<()> {
 
     loop {
         print!("> ");
-        std::io::stdout().flush()?;
+        std::io::stdout().flush().into_diagnostic()?;
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
+        std::io::stdin().read_line(&mut input).into_diagnostic()?;
         let input = input.trim();
 
         if input.is_empty() {
@@ -55,9 +55,13 @@ fn repl() -> Result<()> {
                 println!("  :h | :help - Display this help message");
                 continue;
             }
-            _ => match interpreter.interpret(input) {
+            _ => match interpreter
+                .interpret(input)
+                .map_err(miette::Report::new)
+                .map_err(|e| e.with_source_code(input.to_string()))
+            {
                 Ok(value) => println!("{input} = {value}"),
-                Err(e) => eprintln!("Error: {e}"),
+                Err(e) => eprintln!("{e:?}"),
             },
         }
     }
@@ -67,7 +71,10 @@ fn repl() -> Result<()> {
 
 fn eval_expr(expr: &str) -> Result<()> {
     let interpreter = Interpreter::new();
-    let value = interpreter.interpret(expr)?;
+    let value = interpreter
+        .interpret(expr)
+        .map_err(miette::Report::new)
+        .map_err(|e| e.with_source_code(expr.to_string()))?;
     println!("{expr} = {value}");
 
     Ok(())

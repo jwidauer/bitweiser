@@ -8,9 +8,70 @@ pub mod value;
 #[macro_use]
 mod token;
 
-use anyhow::Result;
+use miette::Diagnostic;
+use std::ops::Range;
+use thiserror::Error;
+
 use expr::Expr;
+use token::Token;
 use value::Value;
+
+#[derive(Debug, Clone, PartialEq, Error, Diagnostic)]
+#[error(transparent)]
+pub enum SyntaxErrorKind {
+    Parse(#[from] parser::ParseError),
+    Lex(#[from] lexer::LexError),
+    Value(#[from] ValueError),
+}
+
+#[derive(Debug, Clone, PartialEq, Error, Diagnostic)]
+#[error("Syntax error")]
+pub struct SyntaxError {
+    #[source]
+    kind: SyntaxErrorKind,
+    #[label = "here"]
+    loc: Range<usize>,
+}
+
+impl SyntaxError {
+    fn new(kind: SyntaxErrorKind, loc: Range<usize>) -> Self {
+        Self { kind, loc }
+    }
+}
+
+impl From<SyntaxErrorKind> for SyntaxError {
+    fn from(kind: SyntaxErrorKind) -> Self {
+        match &kind {
+            SyntaxErrorKind::Parse(e) => Self::new(kind.clone(), e.token().loc().clone()),
+            SyntaxErrorKind::Lex(e) => Self::new(kind.clone(), e.loc()..e.loc() + 1),
+            SyntaxErrorKind::Value(e) => Self::new(kind.clone(), e.token().loc().clone()),
+        }
+    }
+}
+
+impl From<ValueError> for SyntaxError {
+    fn from(e: ValueError) -> Self {
+        Self::new(SyntaxErrorKind::Value(e.clone()), e.token().loc().clone())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Error, Diagnostic)]
+#[error("{}", kind)]
+pub struct ValueError {
+    kind: value::ValueErrorKind,
+    #[label = "here"]
+    token: Token,
+}
+
+impl ValueError {
+    fn new(kind: value::ValueErrorKind, token: Token) -> Self {
+        Self { kind, token }
+    }
+
+    fn token(&self) -> &Token {
+        &self.token
+    }
+}
 
 pub struct Interpreter {}
 
@@ -19,7 +80,7 @@ impl Interpreter {
         Self {}
     }
 
-    pub fn interpret(&self, input: &str) -> Result<Value> {
+    pub fn interpret(&self, input: &str) -> Result<Value, SyntaxError> {
         let lexer = lexer::Lexer::new(input);
         let mut parser = parser::Parser::new(lexer);
         let expr = parser.parse()?;
@@ -27,7 +88,7 @@ impl Interpreter {
     }
 }
 
-fn evaluate(expr: &Expr) -> Result<Value> {
+fn evaluate(expr: &Expr) -> Result<Value, SyntaxError> {
     use expr::OperatorExpr as OE;
     use token::TokenKind as TK;
 
@@ -43,8 +104,12 @@ fn evaluate(expr: &Expr) -> Result<Value> {
                 match operator.kind() {
                     TK::Plus => Ok(left + right),
                     TK::Minus => Ok(left - right),
-                    TK::Star => left.try_mul(right),
-                    TK::Slash => left.try_div(right),
+                    TK::Star => left
+                        .try_mul(right)
+                        .map_err(|e| ValueError::new(e, operator.clone()).into()),
+                    TK::Slash => left
+                        .try_div(right)
+                        .map_err(|e| ValueError::new(e, operator.clone()).into()),
                     k => unreachable!("Invalid binary operator: {:?}", k),
                 }
             }
@@ -60,7 +125,6 @@ fn evaluate(expr: &Expr) -> Result<Value> {
                 let right = evaluate(right)?;
                 match operator.kind() {
                     TK::Minus => Ok(-right),
-                    TK::Plus => Ok(right),
                     k => unreachable!("Invalid unary operator: {:?}", k),
                 }
             }
