@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use clap::Parser;
 use colored::Colorize;
 use miette::{IntoDiagnostic, Result};
@@ -9,6 +7,7 @@ mod interpreter;
 
 use format::as_bin;
 use interpreter::Interpreter;
+use rustyline::error::ReadlineError;
 
 fn print_stats(num: u64) {
     let dec = "Decimal".green();
@@ -33,51 +32,64 @@ fn print_stats(num: u64) {
     println!("{bin_size_str}:\t{bin_size}");
 }
 
-fn repl() -> Result<()> {
-    let interpreter = Interpreter::new();
+struct Repl {
+    interpreter: Interpreter,
+}
 
-    loop {
-        print!("> ");
-        std::io::stdout().flush().into_diagnostic()?;
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).into_diagnostic()?;
-        let input = input.trim();
+impl Repl {
+    fn new() -> Self {
+        Self {
+            interpreter: Interpreter::new(),
+        }
+    }
 
-        if input.is_empty() {
-            continue;
+    fn run(&self) -> Result<()> {
+        let mut rl = rustyline::DefaultEditor::new().into_diagnostic()?;
+        println!("Welcome to the REPL! Type :h or :help for help.");
+        loop {
+            let readline = rl.readline(">> ");
+
+            match readline {
+                Ok(line) => {
+                    rl.add_history_entry(line.as_str()).into_diagnostic()?;
+                    self.eval_line(&line);
+                }
+                Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
+                    break;
+                }
+                Err(err) => {
+                    eprintln!("Error: {:?}", err);
+                    break;
+                }
+            }
         }
 
-        match input {
-            ":q" | ":quit" => break,
+        Ok(())
+    }
+
+    fn eval_line(&self, line: &str) {
+        match line {
+            ":q" | ":quit" => std::process::exit(0),
             ":h" | ":help" => {
                 println!("Commands:");
                 println!("  :q | :quit - Quit the REPL");
                 println!("  :h | :help - Display this help message");
-                continue;
             }
-            _ => match interpreter
-                .interpret(input)
-                .map_err(miette::Report::new)
-                .map_err(|e| e.with_source_code(input.to_string()))
-            {
-                Ok(value) => println!("{input} = {value}"),
-                Err(e) => eprintln!("{e:?}"),
-            },
+            _ => self.eval_expr(line),
         }
     }
 
-    Ok(())
-}
-
-fn eval_expr(expr: &str) -> Result<()> {
-    let interpreter = Interpreter::new();
-    let value = interpreter
-        .interpret(expr)
-        .map_err(miette::Report::new)
-        .map_err(|e| e.with_source_code(expr.to_string()))?;
-    println!("{expr} = {value}");
-
-    Ok(())
+    fn eval_expr(&self, expr: &str) {
+        match self
+            .interpreter
+            .interpret(expr)
+            .map_err(miette::Report::new)
+            .map_err(|e| e.with_source_code(expr.to_string()))
+        {
+            Ok(value) => println!("{expr} = {value}"),
+            Err(e) => eprintln!("{e:?}"),
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -89,9 +101,10 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    let repl = Repl::new();
     match args.expr {
-        Some(expr) => eval_expr(&expr)?,
-        None => repl()?,
+        Some(expr) => repl.eval_expr(&expr),
+        None => repl.run()?,
     }
 
     Ok(())

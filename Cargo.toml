@@ -8,5 +8,6 @@ clap = { version = "4.5.23", features = ["derive"] }
 colored = "2.1.0"
 miette = { version = "7.4.0", features = ["fancy"] }
 paste = "1.0.15"
+rustyline = "15.0.0"
 static_assertions = "1.1.0"
 thiserror = "2.0.3"
