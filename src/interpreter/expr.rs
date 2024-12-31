@@ -33,7 +33,7 @@ pub enum OperatorExpr {
         right: Box<Expr>,
     },
     TypeCast {
-        left: Box<Expr>,
+        expr: Box<Expr>,
         unit: Token,
     },
     Unary {
@@ -52,7 +52,7 @@ impl Display for OperatorExpr {
             } => {
                 write!(f, "({} {} {})", operator, left, right)
             }
-            OperatorExpr::TypeCast { left, unit } => {
+            OperatorExpr::TypeCast { expr: left, unit } => {
                 write!(f, "(as {} {})", left, unit)
             }
             OperatorExpr::Unary { operator, right } => {

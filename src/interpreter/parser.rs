@@ -73,10 +73,10 @@ pub struct Parser<'a> {
 
 macro_rules! bump_if {
     ($self:ident, $($kind:ident),+) => {
-        matches!($self.peek()?, $(Some(TokenKind::$kind))|+).then(|| $self.bump())
+        matches!($self.peek()?.map(|t| t.kind()), $(Some(TokenKind::$kind))|+).then(|| $self.bump())
     };
     ($self:ident, $($kind:ident(_)),+) => {
-        matches!($self.peek()?, $(Some(TokenKind::$kind(_)))|+).then(|| $self.bump())
+        matches!($self.peek()?.map(|t| t.kind()), $(Some(TokenKind::$kind(_)))|+).then(|| $self.bump())
     };
 }
 
@@ -138,7 +138,7 @@ impl<'a> Parser<'a> {
             let unit = self.consume_unit()?;
 
             expr = Expr::Operator(OE::TypeCast {
-                left: Box::new(expr),
+                expr: Box::new(expr),
                 unit,
             });
         }
@@ -156,7 +156,7 @@ impl<'a> Parser<'a> {
     }
 
     fn primary(&mut self) -> Result<Expr, SyntaxErrorKind> {
-        match self.peek()? {
+        match self.peek()?.map(|t| t.kind()) {
             Some(TokenKind::Integer(_)) => {
                 let kind = self.bump();
                 let unit = bump_if!(self, Unit(_));
@@ -178,20 +178,16 @@ impl<'a> Parser<'a> {
         self.iter.next().unwrap().unwrap().clone()
     }
 
-    fn peek(&mut self) -> Result<Option<TokenKind>, LexError> {
-        self.iter
-            .peek()
-            .map(ToOwned::to_owned)
-            .transpose()
-            .map(|o| o.map(|t| t.kind()))
+    fn peek(&mut self) -> Result<Option<Token>, LexError> {
+        self.iter.peek().map(ToOwned::to_owned).transpose()
     }
 
     fn consume_unit(&mut self) -> Result<Token, SyntaxErrorKind> {
-        bump_if!(self, Unit(_)).ok_or(error!(ExpectedUnit, self.bump()).into())
+        bump_if!(self, Unit(_)).ok_or(error!(ExpectedUnit, self.peek()?.unwrap()).into())
     }
 
     fn consume_r_paren(&mut self) -> Result<Token, SyntaxErrorKind> {
-        bump_if!(self, RightParen).ok_or(error!(UnexpectedToken(")"), self.bump()).into())
+        bump_if!(self, RightParen).ok_or(error!(UnexpectedToken(")"), self.peek()?.unwrap()).into())
     }
 }
 
@@ -340,7 +336,7 @@ mod tests {
         assert_eq!(
             expr,
             Expr::Operator(OE::TypeCast {
-                left: Box::new(Expr::Literal {
+                expr: Box::new(Expr::Literal {
                     kind: token!(Integer(1234), 0..4),
                     unit: None
                 }),
@@ -358,6 +354,52 @@ mod tests {
                 kind: token!(Integer(1234), 0..4),
                 unit: Some(token!(Unit(FullUnit(UnitPrefix::Kibi, Unit::Byte)), 5..8)),
             }
+        );
+    }
+
+    #[test]
+    fn test_expression_with_multiple_brackets() {
+        let expr = parse!("((125KB + 256Kb * 2) * 3) as MB").unwrap();
+        assert_eq!(
+            expr,
+            Expr::Operator(OE::TypeCast {
+                expr: Box::new(Expr::Grouping(Box::new(Expr::Operator(
+                    OE::ArithmeticOrLogical {
+                        left: Box::new(Expr::Grouping(Box::new(Expr::Operator(
+                            OE::ArithmeticOrLogical {
+                                left: Box::new(Expr::Literal {
+                                    kind: token!(Integer(125), 2..5),
+                                    unit: Some(token!(
+                                        Unit(FullUnit(UnitPrefix::Kilo, Unit::Byte)),
+                                        5..7
+                                    )),
+                                }),
+                                operator: token!(Plus, 8..9),
+                                right: Box::new(Expr::Operator(OE::ArithmeticOrLogical {
+                                    left: Box::new(Expr::Literal {
+                                        kind: token!(Integer(256), 10..13),
+                                        unit: Some(token!(
+                                            Unit(FullUnit(UnitPrefix::Kilo, Unit::Bit)),
+                                            13..15
+                                        )),
+                                    }),
+                                    operator: token!(Star, 16..17),
+                                    right: Box::new(Expr::Literal {
+                                        kind: token!(Integer(2), 18..19),
+                                        unit: None,
+                                    }),
+                                })),
+                            }
+                        )))),
+                        operator: token!(Star, 21..22),
+                        right: Box::new(Expr::Literal {
+                            kind: token!(Integer(3), 23..24),
+                            unit: None,
+                        }),
+                    }
+                )))),
+                unit: token!(Unit(FullUnit(UnitPrefix::Mega, Unit::Byte)), 29..31),
+            })
         );
     }
 }

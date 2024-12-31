@@ -113,7 +113,7 @@ fn evaluate(expr: &Expr) -> Result<Value, SyntaxError> {
                     k => unreachable!("Invalid binary operator: {:?}", k),
                 }
             }
-            OE::TypeCast { left, unit } => {
+            OE::TypeCast { expr: left, unit } => {
                 let left = evaluate(left)?;
                 let unit = match unit.kind() {
                     TK::Unit(unit) => unit,
